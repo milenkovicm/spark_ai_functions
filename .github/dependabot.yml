@@ -1,0 +1,31 @@
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      langchain4j:
+        patterns:
+          - "dev.langchain4j:*"
+      maven-plugins:
+        patterns:
+          - "org.apache.maven.plugins:*"
+          - "net.alchim31.maven:*"
+          - "org.scalatest:scalatest-maven-plugin"
+    ignore:
+      # Spark and its Scala version are the target platform; bump them deliberately.
+      - dependency-name: "org.apache.spark:*"
+        update-types: [ "version-update:semver-major", "version-update:semver-minor" ]
+      - dependency-name: "org.scala-lang:scala-library"
+        update-types: [ "version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch" ]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
