@@ -21,9 +21,9 @@
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-        <scala.version>2.13.16</scala.version>
+        <scala.version>2.13.17</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.0.5</spark.version>
+        <spark.version>4.1.4</spark.version>
         <langchain4j.version>1.23.0</langchain4j.version>
         <scalatest.version>3.2.20</scalatest.version>
 

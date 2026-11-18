@@ -24,7 +24,7 @@ FROM reviews
 
 The functions are ordinary SQL functions. You can use them in `SELECT`, `WHERE`, `GROUP BY`, inside aggregates and in window `PARTITION BY`, from SQL or the DataFrame API. Within each Spark partition, the model requests are sent **concurrently**, not one row at a time.
 
-- Spark 4.0.x, Scala 2.13, JDK 17+ (built and tested on JDK 21)
+- Spark 4.1.x, Scala 2.13, JDK 17+ (built and tested on JDK 21)
 - Model access goes through [LangChain4j](https://github.com/langchain4j/langchain4j) (`OpenAiChatModel`)
 
 ## Getting started
