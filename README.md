@@ -365,6 +365,18 @@ mvn test -Dsuites=com.github.milenkovicm.spark.ai.OllamaIntegrationSuite
 
 `com.github.milenkovicm.Main` is a runnable Java demo against a local Ollama server. Spark needs the `--add-opens` JVM flags listed in `pom.xml` (`spark.jvm.opens`).
 
+### Starting Spark Connect Cluster
+
+```bash
+
+/start-connect-server.sh \
+      --jars /Users/marko/git/spark_ai_functions/target/spark_ai_functions-1.0-SNAPSHOT-uber.jar \
+      --conf spark.sql.extensions=com.github.milenkovicm.spark.ai.AiExtensions \
+      --conf spark.sql.ai.baseUrl="${AI_BASE_URL:-http://127.0.0.1:11434/v1}" \
+      --conf spark.sql.ai.defaultModel="${AI_DEFAULT_MODEL:-qwen2.5:1.5b-instruct}" \
+      --conf spark.sql.ai.secret="sk_123123123"
+```
+
 ### Source layout
 
 ```
