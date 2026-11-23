@@ -33,11 +33,28 @@ The functions are ordinary SQL functions. You can use them in `SELECT`, `WHERE`,
 
 ```bash
 mvn package          # builds target/spark_ai_functions-1.0-SNAPSHOT.jar
+                     #    and target/spark_ai_functions-1.0-SNAPSHOT-uber.jar
 ```
 
-Spark is a `provided` dependency. LangChain4j is not, so put its jars on the classpath too. One way is to pass the jar together with `--packages dev.langchain4j:langchain4j-open-ai:1.23.0`.
+Spark is a `provided` dependency. LangChain4j is not, so it has to be on the classpath too. You can do this in two ways:
+
+- **Uber jar** (`-uber.jar`). It bundles LangChain4j and its dependencies. It leaves out Jackson and SLF4J, which Spark already ships.
+- **Thin jar**. Pass it together with `--packages dev.langchain4j:langchain4j-open-ai:1.23.0`.
 
 ### Enable the extension
+
+With the uber jar:
+
+```bash
+spark-submit \
+  --jars target/spark_ai_functions-1.0-SNAPSHOT-uber.jar \
+  --conf spark.sql.extensions=com.github.milenkovicm.spark.ai.AiExtensions \
+  --conf spark.sql.ai.baseUrl=http://127.0.0.1:11434/v1 \
+  --conf spark.sql.ai.defaultModel=qwen2.5:1.5b-instruct \
+  ...
+```
+
+or with the thin jar:
 
 ```bash
 spark-submit \
