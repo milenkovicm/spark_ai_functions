@@ -24,7 +24,7 @@ case class AiDistribution(partitions: Int, coalesce: Boolean)
 object AiConfig {
   val Prefix = "spark.sql.ai."
   val BaseUrl = Prefix + "baseUrl"
-  val ApiKey = Prefix + "apiKey"
+  val ApiKey = Prefix + "secret"
   val DefaultModel = Prefix + "defaultModel"
   val TimeoutMs = Prefix + "timeoutMs"
   val MaxRetries = Prefix + "maxRetries"

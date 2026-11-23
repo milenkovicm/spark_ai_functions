@@ -183,7 +183,7 @@ spark.table("reviews")
 | Key | Default | Description |
 |---|---|---|
 | `spark.sql.ai.baseUrl` | `http://127.0.0.1:11434/v1` | OpenAI-compatible base URL. |
-| `spark.sql.ai.apiKey` | `$OPENAI_API_KEY` or `none` | API key. |
+| `spark.sql.ai.secret` | `$OPENAI_API_KEY` or `none` | API key. |
 | `spark.sql.ai.defaultModel` | (none) | Model used by the helper functions (`ai_gen`, `ai_classify`, ...). |
 | `spark.sql.ai.concurrency` | `16` | Maximum number of requests in flight **per partition** (per task). |
 | `spark.sql.ai.timeoutMs` | `120000` | Per-request timeout. |
