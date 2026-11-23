@@ -5,7 +5,7 @@
       <option name="deprecationWarnings" value="true" />
       <option name="featureWarnings" value="true" />
       <parameters>
-        <parameter value="-release:21" />
+        <parameter value="-release:17" />
       </parameters>
     </profile>
   </component>

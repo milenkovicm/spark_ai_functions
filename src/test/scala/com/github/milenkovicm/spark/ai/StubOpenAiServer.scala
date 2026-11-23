@@ -24,7 +24,11 @@ class StubOpenAiServer(delayMs: Long) extends AutoCloseable {
   private val seen = ConcurrentHashMap.newKeySet[String]()
 
   private val server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0)
-  server.setExecutor(Executors.newVirtualThreadPerTaskExecutor())
+  server.setExecutor(Executors.newCachedThreadPool { (r: Runnable) =>
+    val t = new Thread(r, "stub-openai-server")
+    t.setDaemon(true)
+    t
+  })
   server.createContext("/v1/chat/completions", (ex: HttpExchange) => handle(ex))
   server.start()
 

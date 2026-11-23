@@ -24,7 +24,7 @@ FROM reviews
 
 The functions are ordinary SQL functions. You can use them in `SELECT`, `WHERE`, `GROUP BY`, inside aggregates and in window `PARTITION BY`, from SQL or the DataFrame API. Within each Spark partition, the model requests are sent **concurrently**, not one row at a time.
 
-- Spark 4.1.x, Scala 2.13, JDK 17+ (built and tested on JDK 21)
+- Spark 4.1.x, Scala 2.13, JDK 17+ (built and tested on JDK 17)
 - Model access goes through [LangChain4j](https://github.com/langchain4j/langchain4j) (`OpenAiChatModel`)
 
 ## Getting started
@@ -325,7 +325,7 @@ Each executor JVM keeps one LangChain4j `OpenAiChatModel` per distinct `AiConfig
 - timeouts;
 - retries with backoff on HTTP 429 and 5xx errors.
 
-`ChatModel.chat()` is blocking, so each request runs on a **JDK 21 virtual thread** (`Executors.newVirtualThreadPerTaskExecutor()`). Many requests can therefore wait on the network at once without tying up platform threads. The sliding window in `AsyncEvaluator`, not a thread pool, is what limits concurrency.
+`ChatModel.chat()` is blocking, so each request runs on its own thread from a shared, unbounded **cached pool of daemon threads** (`Executors.newCachedThreadPool`). Many requests can therefore wait on the network at once. The sliding window in `AsyncEvaluator`, not the pool, is what limits concurrency. The pool grows only to the number of requests in flight, and threads that sit idle for 60 s are released.
 
 ### 5. Optional redistribution
 

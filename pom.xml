@@ -16,9 +16,9 @@
     </licenses>
 
     <properties>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
-        <maven.compiler.release>21</maven.compiler.release>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <scala.version>2.13.17</scala.version>
@@ -87,7 +87,7 @@
                     <args>
                         <arg>-deprecation</arg>
                         <arg>-feature</arg>
-                        <arg>-release:21</arg>
+                        <arg>-release:17</arg>
                     </args>
                 </configuration>
                 <executions>

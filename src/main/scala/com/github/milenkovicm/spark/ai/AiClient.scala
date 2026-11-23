@@ -2,6 +2,7 @@ package com.github.milenkovicm.spark.ai
 
 import java.time.Duration
 import java.util.concurrent.{Callable, ConcurrentHashMap, ExecutorService, Executors, Future}
+import java.util.concurrent.atomic.AtomicInteger
 
 import dev.langchain4j.model.chat.ChatModel
 import dev.langchain4j.model.openai.OpenAiChatModel
@@ -11,12 +12,19 @@ case class AiResponse(text: String, error: Throwable, nanos: Long)
 
 /**
  * Executor-side model access through LangChain4j. `ChatModel.chat` blocks, so every call runs on
- * its own virtual thread; the caller bounds how many are in flight.
+ * its own pooled daemon thread; the caller bounds how many are in flight, so the pool stays small
+ * and idle threads expire after a minute.
  */
 object AiClient {
   private val models = new ConcurrentHashMap[AiConfig, ChatModel]()
 
-  private lazy val executor: ExecutorService = Executors.newVirtualThreadPerTaskExecutor()
+  private val threadIds = new AtomicInteger()
+
+  private lazy val executor: ExecutorService = Executors.newCachedThreadPool { (r: Runnable) =>
+    val t = new Thread(r, s"spark-ai-client-${threadIds.incrementAndGet()}")
+    t.setDaemon(true)
+    t
+  }
 
   def model(config: AiConfig): ChatModel = models.computeIfAbsent(config, build)
 
