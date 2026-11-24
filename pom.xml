@@ -24,7 +24,7 @@
         <scala.version>2.13.17</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.1.4</spark.version>
-        <langchain4j.version>1.23.0</langchain4j.version>
+        <langchain4j.version>1.24.0</langchain4j.version>
         <scalatest.version>3.2.20</scalatest.version>
 
         <!-- Spark on JDK 17+ needs these (same list as Spark's JavaModuleOptions) -->
