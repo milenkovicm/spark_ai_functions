@@ -8,7 +8,7 @@ import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, LogicalPlan, Proj
 import org.apache.spark.sql.catalyst.rules.Rule
 
 /**
- * Moves [[AiQuery]] out of an `Aggregate` so that it ends up in a `Project`, which [[AiStrategy]]
+ * Moves [[AiExpression]]s (ai_query and the decision functions) out of an `Aggregate` so that it ends up in a `Project`, which [[AiStrategy]]
  * plans. (GROUP BY keys are already handled by Spark's `PullOutNondeterministic`.)
  *
  *  - inside aggregate functions, `count(ai_query(m, x))`: evaluated per input row in a Project
@@ -20,11 +20,11 @@ import org.apache.spark.sql.catalyst.rules.Rule
  */
 object PullOutAiQuery extends Rule[LogicalPlan] {
 
-  private def hasAi(e: Expression): Boolean = e.exists(_.isInstanceOf[AiQuery])
+  private def hasAi(e: Expression): Boolean = e.exists(_.isInstanceOf[AiExpression])
 
   /** Outermost calls only; nested ones travel with their parent. */
-  private def outermost(e: Expression): Seq[AiQuery] = e match {
-    case q: AiQuery => Seq(q)
+  private def outermost(e: Expression): Seq[AiExpression] = e match {
+    case q: AiExpression => Seq(q)
     case other => other.children.flatMap(outermost)
   }
 
@@ -42,7 +42,7 @@ object PullOutAiQuery extends Rule[LogicalPlan] {
     val aliases = calls.map(q => q -> Alias(q, "_ai_query")()).toMap[Expression, Alias]
     val newAggs = a.aggregateExpressions.map(_.transformDown {
       case ae: AggregateExpression => ae.transformDown {
-        case q: AiQuery if aliases.contains(q) => aliases(q).toAttribute
+        case q: AiExpression if aliases.contains(q) => aliases(q).toAttribute
       }
     }.asInstanceOf[NamedExpression])
     a.copy(

@@ -8,25 +8,23 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, JoinedRow, UnsafeProjection}
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.unsafe.types.UTF8String
-
-/** One `ai_query` call site, fully resolved on the driver. */
-case class AiCall(config: AiConfig, failOnError: Boolean)
 
 /**
  * Wraps a partition iterator and keeps up to `window` input rows' requests in flight, emitting
  * rows in input order as soon as the head of the queue has all of its results.
  *
- * @param prompts projects an input row to one string column per call (reused, so read eagerly)
+ * @param prompts projects an input row to one string column per request (reused, so read eagerly)
+ * @param width   number of result columns (a request may fill several)
  * @param output  projects `input ++ results` to the operator's output
  */
 class AsyncEvaluator(
     input: Iterator[InternalRow],
-    calls: Seq[AiCall],
+    requests: Seq[AiRequest],
     prompts: UnsafeProjection,
+    width: Int,
     output: UnsafeProjection,
     window: Int,
-    requests: SQLMetric,
+    numRequests: SQLMetric,
     failures: SQLMetric,
     requestTime: SQLMetric)
   extends Iterator[InternalRow] with Logging {
@@ -41,8 +39,8 @@ class AsyncEvaluator(
       // Upstream operators reuse their row objects; we hold this one across next() calls.
       val row = input.next().copy()
       val p = prompts(row)
-      val futures = calls.indices.map { i =>
-        if (p.isNullAt(i)) null else AiClient.submit(calls(i).config, p.getUTF8String(i).toString)
+      val futures = requests.indices.map { i =>
+        if (p.isNullAt(i)) null else requests(i).submit(p.getUTF8String(i).toString)
       }.toArray
       pending.add((row, futures))
     }
@@ -56,21 +54,22 @@ class AsyncEvaluator(
   override def next(): InternalRow = {
     if (!hasNext) throw new NoSuchElementException
     val (row, futures) = pending.poll()
-    val results = new GenericInternalRow(futures.length)
+    val results = new GenericInternalRow(width)
     var i = 0
     while (i < futures.length) {
       if (futures(i) != null) {
         val r = futures(i).get()
-        requests += 1
+        val request = requests(i)
+        numRequests += 1
         requestTime += r.nanos / 1000000
         if (r.error == null) {
-          results.update(i, UTF8String.fromString(r.text))
+          request.complete(r.value, results)
         } else {
           failures += 1
-          if (calls(i).failOnError) {
-            throw new RuntimeException(s"ai_query to model '${calls(i).config.model}' failed", r.error)
+          if (request.failOnError) {
+            throw new RuntimeException(s"${request.describe} failed", r.error)
           }
-          logWarning(s"ai_query to model '${calls(i).config.model}' failed, returning null", r.error)
+          logWarning(s"${request.describe} failed, returning null", r.error)
         }
       }
       i += 1

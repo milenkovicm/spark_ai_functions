@@ -2,12 +2,11 @@ package com.github.milenkovicm.spark.ai
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, Expression, IntegerLiteral, NamedExpression, PredicateHelper, SortOrder}
-import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, Limit, LogicalPlan, Project, ReturnAnswer, Sort}
+import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, Limit, LogicalPlan, Project, ReturnAnswer, Sort, SortHint}
 import org.apache.spark.sql.catalyst.plans.physical.{RangePartitioning, RoundRobinPartitioning, SinglePartition, UnknownPartitioning}
 import org.apache.spark.sql.execution.{CoalesceExec, FilterExec, ProjectExec, SortExec, SparkPlan, SparkStrategy, TakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.exchange.{REPARTITION_BY_NUM, ShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.StringType
 
 /**
  * Plans `Project`/`Filter`/`Aggregate` nodes containing [[AiQuery]] as `AiQueryExec` + `ProjectExec`/`FilterExec`,
@@ -18,7 +17,7 @@ case class AiStrategy(session: SparkSession) extends SparkStrategy with Predicat
 
   private def conf: SQLConf = session.sessionState.conf
 
-  private def hasAi(e: Expression): Boolean = e.exists(_.isInstanceOf[AiQuery])
+  private def hasAi(e: Expression): Boolean = e.exists(_.isInstanceOf[AiExpression])
 
   /**
    * A projection containing ai_query: a `Project`, or an `Aggregate` whose output calls ai_query
@@ -66,18 +65,13 @@ case class AiStrategy(session: SparkSession) extends SparkStrategy with Predicat
     // A global sort samples its input in a separate job, which would call the model twice per row.
     // Sort first when the keys allow it; the projection preserves the order.
     case Sort(order, global, AiProject(list, child), hint) if sortableBelow(order, child) =>
-      val sorted = AiConfig.distribution(conf) match {
-        case None => planLater(Sort(order, global, child, hint))
-        // Redistributing after the sort would lose the order, so the sort's own partitioning does it.
-        case Some(AiDistribution(1, true)) if global =>
-          SortExec(order, global = true, CoalesceExec(1, planLater(child)))
-        case Some(AiDistribution(n, _)) if global =>
-          val partitioning = if (n == 1) SinglePartition else RangePartitioning(order, n)
-          SortExec(order, global = true, ShuffleExchangeExec(partitioning, planLater(child), REPARTITION_BY_NUM))
-        case Some(_) =>
-          SortExec(order, global = false, distribute(planLater(child)))
-      }
-      project(list, sorted) :: Nil
+      project(list, sortBelow(order, global, child, hint)) :: Nil
+
+    // The same with a plain projection over the model call, e.g. fields of an ai_decide struct
+    // selected from a subquery: `SELECT d.a FROM (SELECT ai_decide(...) AS d ...) ORDER BY id`.
+    case Sort(order, global, Project(outer, AiProject(list, child)), hint)
+        if !outer.exists(hasAi) && sortableBelow(order, child) =>
+      ProjectExec(outer, project(list, sortBelow(order, global, child, hint))) :: Nil
 
     case AiProject(list, child) =>
       project(list, planLater(child)) :: Nil
@@ -95,6 +89,20 @@ case class AiStrategy(session: SparkSession) extends SparkStrategy with Predicat
 
     case _ => Nil
   }
+
+  /** Plans the sort of `child`, which the model-call projection above keeps in order. */
+  private def sortBelow(order: Seq[SortOrder], global: Boolean, child: LogicalPlan, hint: Option[SortHint]): SparkPlan =
+    AiConfig.distribution(conf) match {
+      case None => planLater(Sort(order, global, child, hint))
+      // Redistributing after the sort would lose the order, so the sort's own partitioning does it.
+      case Some(AiDistribution(1, true)) if global =>
+        SortExec(order, global = true, CoalesceExec(1, planLater(child)))
+      case Some(AiDistribution(n, _)) if global =>
+        val partitioning = if (n == 1) SinglePartition else RangePartitioning(order, n)
+        SortExec(order, global = true, ShuffleExchangeExec(partitioning, planLater(child), REPARTITION_BY_NUM))
+      case Some(_) =>
+        SortExec(order, global = false, distribute(planLater(child)))
+    }
 
   private def project(list: Seq[NamedExpression], child: SparkPlan): SparkPlan = {
     val (exec, rewritten) = extract(list, child)
@@ -119,7 +127,7 @@ case class AiStrategy(session: SparkSession) extends SparkStrategy with Predicat
   }
 
   /**
-   * Replaces every [[AiQuery]] in `exprs` with a reference to a column produced by an
+   * Replaces every [[AiExpression]] in `exprs` with a reference to a column produced by an
    * [[AiQueryExec]] stacked on `child`. Nested calls (`ai_query(m, ai_query(m, x))`) get one
    * exec per nesting level, innermost first. The input is redistributed once, below all of them.
    */
@@ -128,18 +136,49 @@ case class AiStrategy(session: SparkSession) extends SparkStrategy with Predicat
     var plan = distribute(child)
     while (current.exists(hasAi)) {
       val innermost = current.flatMap(_.collect {
-        case q: AiQuery if !q.children.exists(hasAi) => q
+        case q: AiExpression if !q.children.exists(hasAi) => q
       }).distinct
-      val attrs = innermost.indices.map(i => AttributeReference(s"ai_query_$i", StringType)())
+      val attrs = innermost.zipWithIndex.map { case (q, i) => AttributeReference(s"${q.prettyName}_$i", q.dataType)() }
       val replacements = innermost.zip(attrs).toMap[Expression, Expression]
-      plan = AiQueryExec(innermost, innermost.map(resolve), attrs, AiConfig.concurrency(conf), plan)
-      current = current.map(_.transformUp { case q: AiQuery if replacements.contains(q) => replacements(q) })
+      plan = AiQueryExec(innermost, requests(innermost), attrs, AiConfig.concurrency(conf), plan)
+      current = current.map(_.transformUp {
+        case q: AiExpression if replacements.contains(q) => replacements(q)
+      })
     }
     (plan, current)
   }
 
-  private def resolve(q: AiQuery): AiCall = {
-    val params = q.modelParams
-    AiCall(AiConfig.resolve(conf, q.modelName, params), AiConfig.failOnError(conf, params))
+  /**
+   * One request per chat call. Decision calls with the same input, endpoint and error mode are
+   * merged into one request per row (as many as the API's question limit requires), in the
+   * order the calls first appear.
+   */
+  private def requests(calls: Seq[AiExpression]): Seq[AiRequest] = {
+    val chat = calls.zipWithIndex.collect { case (q: AiQuery, i) =>
+      val params = q.modelParams
+      i -> ChatRequest(q.request, AiCall(AiConfig.resolve(conf, q.modelName, params), AiConfig.failOnError(conf, params)), i)
+    }
+    val decisions = calls.zipWithIndex.collect { case (d: AiDecision, i) =>
+      (d, i, AiConfig.resolveDecision(conf, d.model), AiConfig.decisionFailOnError(conf, d.onError))
+    }
+    val groups = decisions.groupBy { case (d, _, config, fail) => (d.input.canonicalized, config, fail) }
+    val merged = groups.values.toSeq.flatMap { group =>
+      val (first, _, config, fail) = group.head
+      val members = group.map { case (d, i, _, _) =>
+        val wireIds = d.questions.map { case (id, _) => if (d.output == DecisionOutput.Decide) s"q${i}_$id" else s"q$i" }
+        DecisionMember(i, d.output, d.questions, wireIds)
+      }
+      chunks(members, config.maxQuestions).map(ms => ms.head.column -> DecisionRequest(first.input, config, fail, ms))
+    }
+    (chat ++ merged).sortBy(_._1).map(_._2)
   }
+
+  /** Splits `members` into groups of at most `max` questions; a single member never exceeds it. */
+  private def chunks(members: Seq[DecisionMember], max: Int): Seq[Seq[DecisionMember]] =
+    members.sortBy(_.column).foldLeft(Vector.empty[Vector[DecisionMember]]) { (acc, m) =>
+      acc.lastOption match {
+        case Some(last) if last.map(_.questions.size).sum + m.questions.size <= max => acc.init :+ (last :+ m)
+        case _ => acc :+ Vector(m)
+      }
+    }
 }

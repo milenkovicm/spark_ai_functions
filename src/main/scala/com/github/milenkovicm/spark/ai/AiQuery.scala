@@ -6,6 +6,20 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, Unevaluable, UserD
 import org.apache.spark.sql.types.{DataType, NullType, StringType, StructType}
 
 /**
+ * A model call that [[AiStrategy]] pulls out of the plan and evaluates in [[AiQueryExec]]:
+ * [[AiQuery]] (chat) or [[AiDecision]] (decision model). See [[AiQuery]] for why it is
+ * `Unevaluable`, non-deterministic and a `UserDefinedExpression`.
+ */
+trait AiExpression extends Expression with Unevaluable with UserDefinedExpression {
+  override lazy val deterministic: Boolean = false
+
+  override def nullable: Boolean = true
+
+  /** Model name shown in the plan. */
+  def modelName: String
+}
+
+/**
  * `ai_query(endpoint, request[, params])`: a placeholder that is never evaluated row by row.
  * [[AiStrategy]] pulls it out of the plan and evaluates it in [[AiQueryExec]].
  *
@@ -20,15 +34,11 @@ import org.apache.spark.sql.types.{DataType, NullType, StringType, StructType}
  * `params` is a foldable struct (e.g. `named_struct('temperature', 0.0, 'max_tokens', 20)`) or null.
  */
 case class AiQuery(endpoint: Expression, request: Expression, params: Expression)
-  extends Expression with Unevaluable with UserDefinedExpression {
+  extends AiExpression {
 
   override def children: Seq[Expression] = Seq(endpoint, request, params)
 
   override def dataType: DataType = StringType
-
-  override def nullable: Boolean = true
-
-  override lazy val deterministic: Boolean = false
 
   override def prettyName: String = "ai_query"
 
@@ -48,7 +58,7 @@ case class AiQuery(endpoint: Expression, request: Expression, params: Expression
   }
 
   /** Model name; only valid once resolved (it is foldable). */
-  def modelName: String = Option(endpoint.eval()).map(_.toString).orNull
+  override def modelName: String = Option(endpoint.eval()).map(_.toString).orNull
 
   /** Model parameters as strings, keyed by struct field name. */
   def modelParams: Map[String, String] = params.dataType match {

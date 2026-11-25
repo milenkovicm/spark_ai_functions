@@ -8,12 +8,13 @@ import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
 /**
- * Evaluates `calls` for every input row, appending one string column per call (`resultAttrs`).
- * Requests are issued concurrently within each partition; see [[AsyncEvaluator]].
+ * Evaluates `calls` for every input row, appending one column per call (`resultAttrs`). The calls
+ * are sent as `requests`: one per chat call, and one per group of decision calls that share an
+ * input and model. Requests are issued concurrently within each partition; see [[AsyncEvaluator]].
  */
 case class AiQueryExec(
-    calls: Seq[AiQuery],
-    resolved: Seq[AiCall],
+    calls: Seq[AiExpression],
+    requests: Seq[AiRequest],
     resultAttrs: Seq[Attribute],
     concurrency: Int,
     child: SparkPlan)
@@ -33,30 +34,32 @@ case class AiQueryExec(
     "requestTime" -> SQLMetrics.createTimingMetric(sparkContext, "AI request time (sum)"))
 
   override protected def doExecute(): RDD[InternalRow] = {
-    val requests = longMetric("numRequests")
+    val numRequests = longMetric("numRequests")
     val failures = longMetric("numFailures")
     val requestTime = longMetric("requestTime")
-    val prompts = calls.map(_.request)
+    val inputs = requests.map(_.input)
     val inputAttrs = child.output
     val outputAttrs = output
-    val calls0 = resolved
-    // `concurrency` bounds requests in flight per partition; each buffered row carries one per call.
-    val window = (concurrency / calls0.size).max(1)
+    val requests0 = requests
+    val width = resultAttrs.size
+    // `concurrency` bounds requests in flight per partition; each buffered row carries one per request.
+    val window = (concurrency / requests0.size).max(1)
     child.execute().mapPartitions { iter =>
       new AsyncEvaluator(
         iter,
-        calls0,
-        UnsafeProjection.create(prompts, inputAttrs),
+        requests0,
+        UnsafeProjection.create(inputs, inputAttrs),
+        width,
         UnsafeProjection.create(outputAttrs, outputAttrs),
         window,
-        requests,
+        numRequests,
         failures,
         requestTime)
     }
   }
 
   override def simpleString(maxFields: Int): String =
-    s"AiQueryExec [${calls.map(_.modelName).mkString(", ")}] -> " +
+    s"AiQueryExec [${requests.map(_.label).mkString(", ")}] -> " +
       s"[${resultAttrs.mkString(", ")}], concurrency=$concurrency"
 
   override protected def withNewChildInternal(newChild: SparkPlan): AiQueryExec =

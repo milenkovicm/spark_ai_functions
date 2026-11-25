@@ -21,6 +21,24 @@ case class AiConfig(
  */
 case class AiDistribution(partitions: Int, coalesce: Boolean)
 
+/**
+ * Settings for one decision-model endpoint, resolved on the driver and shipped to executors,
+ * where it is also the cache key for the LangChain4j `DecisionModel`.
+ *
+ * @param api `systemone` (Ollama `/v1/systemone`) or `decisions` (OpenAI-compatible `/v1/decisions`)
+ */
+case class DecisionConfig(
+    baseUrl: String,
+    apiKey: String,
+    model: String,
+    api: String,
+    timeoutMs: Long,
+    maxRetries: Int) {
+
+  /** Most questions the API accepts in one request. */
+  def maxQuestions: Int = if (api == AiConfig.SystemOne) 64 else 200
+}
+
 object AiConfig {
   val Prefix = "spark.sql.ai."
   val BaseUrl = Prefix + "baseUrl"
@@ -34,19 +52,49 @@ object AiConfig {
   val FailOnError = Prefix + "failOnError"
   val Partitions = Prefix + "partitions"
   val PartitionMode = Prefix + "partitionMode"
+  val DecisionModel = Prefix + "decisionModel"
+  val DecisionApi = Prefix + "decisionApi"
+  val DecisionBaseUrl = Prefix + "decisionBaseUrl"
+
+  val SystemOne = "systemone"
+  val Decisions = "decisions"
+  private val DefaultBaseUrl = "http://127.0.0.1:11434/v1"
 
   private def get(conf: SQLConf, key: String): Option[String] =
     Option(conf.getConfString(key, null)).map(_.trim).filter(_.nonEmpty)
 
   /** Builds the endpoint config for `model`, letting per-call `params` override session defaults. */
   def resolve(conf: SQLConf, model: String, params: Map[String, String]): AiConfig = AiConfig(
-    baseUrl = get(conf, BaseUrl).getOrElse("http://127.0.0.1:11434/v1"),
-    apiKey = get(conf, ApiKey).orElse(sys.env.get("OPENAI_API_KEY")).getOrElse("none"),
+    baseUrl = get(conf, BaseUrl).getOrElse(DefaultBaseUrl),
+    apiKey = apiKey(conf),
     model = model,
     temperature = params.get("temperature").orElse(get(conf, Temperature)).map(_.toDouble),
     maxTokens = params.get("max_tokens").orElse(get(conf, MaxTokens)).map(_.toInt),
     timeoutMs = get(conf, TimeoutMs).map(_.toLong).getOrElse(120000L),
     maxRetries = get(conf, MaxRetries).map(_.toInt).getOrElse(2))
+
+  private def apiKey(conf: SQLConf): String =
+    get(conf, ApiKey).orElse(sys.env.get("OPENAI_API_KEY")).getOrElse("none")
+
+  /** Builds the decision endpoint config for `model`. */
+  def resolveDecision(conf: SQLConf, model: String): DecisionConfig = DecisionConfig(
+    baseUrl = get(conf, DecisionBaseUrl).orElse(get(conf, BaseUrl)).getOrElse(DefaultBaseUrl),
+    apiKey = apiKey(conf),
+    model = model,
+    api = decisionApi(conf),
+    timeoutMs = get(conf, TimeoutMs).map(_.toLong).getOrElse(120000L),
+    maxRetries = get(conf, MaxRetries).map(_.toInt).getOrElse(2))
+
+  def decisionApi(conf: SQLConf): String = get(conf, DecisionApi).getOrElse(SystemOne).toLowerCase match {
+    case api @ (SystemOne | Decisions) => api
+    case other => throw new IllegalArgumentException(s"$DecisionApi must be $SystemOne or $Decisions, got $other")
+  }
+
+  def decisionModel(conf: SQLConf): Option[String] = get(conf, DecisionModel)
+
+  /** `on_error` override, if any, else the session's `failOnError`. */
+  def decisionFailOnError(conf: SQLConf, onError: Option[Boolean]): Boolean =
+    onError.getOrElse(get(conf, FailOnError).forall(_.toBoolean))
 
   def concurrency(conf: SQLConf): Int = get(conf, Concurrency).map(_.toInt).getOrElse(16).max(1)
 

@@ -4,9 +4,13 @@ import java.net.{InetSocketAddress, Socket}
 
 import scala.util.Try
 
-/** Runs against a local Ollama (`qwen2.5:1.5b-instruct`); cancelled when it isn't reachable. */
+/**
+ * Runs against a local Ollama (`qwen2.5:1.5b-instruct`, and the decision model `nimble` for the
+ * decision functions); cancelled when it isn't reachable or the model isn't pulled.
+ */
 class OllamaIntegrationSuite extends SparkSessionSuite {
   private val model = "qwen2.5:1.5b-instruct"
+  private val decisionModel = "nimble:latest"
 
   private lazy val available = Try {
     val s = new Socket()
@@ -14,11 +18,19 @@ class OllamaIntegrationSuite extends SparkSessionSuite {
     finally s.close()
   }.isSuccess
 
+  /** Whether `/api/tags` lists the decision model. */
+  private lazy val decisionAvailable = available && Try {
+    val src = scala.io.Source.fromURL("http://127.0.0.1:11434/api/tags")
+    try src.mkString.contains(s"\"$decisionModel\"") finally src.close()
+  }.getOrElse(false)
+
   override protected def beforeAll(): Unit = {
     super.beforeAll()
     spark.conf.set(AiConfig.BaseUrl, "http://127.0.0.1:11434/v1")
     spark.conf.set(AiConfig.DefaultModel, model)
     spark.conf.set(AiConfig.Temperature, "0")
+    spark.conf.set(AiConfig.DecisionModel, decisionModel)
+    spark.conf.set(AiConfig.DecisionApi, AiConfig.SystemOne)
     spark.sql(
       """SELECT * FROM VALUES
         |  (1, 'I absolutely love this phone, the battery lasts for days!'),
@@ -69,5 +81,38 @@ class OllamaIntegrationSuite extends SparkSessionSuite {
     val s = rows.map(_.getString(1).trim.toLowerCase.stripSuffix("."))
     info(s.mkString(", "))
     assert(s.toSeq == Seq("positive", "negative"))
+  }
+
+  test("decision functions with nimble over /v1/systemone") {
+    assume(decisionAvailable, s"Ollama does not have $decisionModel")
+    val rows = timed("ai_if + ai_probability + ai_choose + ai_score x4") {
+      spark.sql(
+        """SELECT id,
+          |       ai_if(review, 'The review is positive')                        AS positive,
+          |       ai_probability(review, 'The review is positive')               AS p,
+          |       ai_choose(review, array('electronics', 'shipping', 'entertainment')) AS topic,
+          |       ai_score(review, 'How satisfied is the reviewer?', array('angry', 'neutral', 'delighted')) AS satisfaction
+          |FROM reviews ORDER BY id""".stripMargin).collect()
+    }
+    rows.foreach(r => info(r.toString))
+    assert(rows.map(_.getBoolean(1)).toSeq == Seq(true, false, true, false))
+    assert(rows.forall(r => r.getDouble(2) >= 0 && r.getDouble(2) <= 1))
+    assert(rows.map(_.getString(3)).toSeq.take(3) == Seq("electronics", "shipping", "entertainment"))
+    val satisfaction = rows.map(_.getDouble(4))
+    assert(satisfaction(0) > satisfaction(1) && satisfaction(2) > satisfaction(3))
+  }
+
+  test("ai_decide with nimble") {
+    assume(decisionAvailable, s"Ollama does not have $decisionModel")
+    val rows = spark.sql(
+      """SELECT id, d['positive']['probability'] AS positive, d['topic']['choice'] AS topic, d.topic.confidence
+        |FROM (SELECT id, ai_decide(review, '{
+        |  "positive": {"type": "noul", "instructions": "The review is positive"},
+        |  "topic": {"type": "choice", "instructions": "What is the review about?",
+        |            "criteria": {"product": "A physical product", "service": "Delivery or customer service", "media": "Films, music, books"}}
+        |}') AS d FROM reviews) ORDER BY id""".stripMargin).collect()
+    rows.foreach(r => info(r.toString))
+    assert(rows.map(_.getDouble(1) > 0.5).toSeq == Seq(true, false, true, false))
+    assert(rows(1).getString(2) == "service" && rows(2).getString(2) == "media")
   }
 }
