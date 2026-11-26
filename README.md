@@ -1,4 +1,4 @@
-# Spark AI Functions
+# Spark AI Functions [![Build](https://github.com/milenkovicm/spark_ai_functions/actions/workflows/build.yml/badge.svg)](https://github.com/milenkovicm/spark_ai_functions/actions/workflows/build.yml)
 
 AI SQL functions for Apache Spark, similar to
 [Databricks AI Functions](https://docs.databricks.com/aws/en/large-language-models/ai-functions).
