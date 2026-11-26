@@ -85,12 +85,12 @@ class OllamaIntegrationSuite extends SparkSessionSuite {
 
   test("decision functions with nimble over /v1/systemone") {
     assume(decisionAvailable, s"Ollama does not have $decisionModel")
-    val rows = timed("ai_if + ai_probability + ai_choose + ai_score x4") {
+    val rows = timed("ai_if + ai_probability + ai_decide_classify + ai_score x4") {
       spark.sql(
         """SELECT id,
           |       ai_if(review, 'The review is positive')                        AS positive,
           |       ai_probability(review, 'The review is positive')               AS p,
-          |       ai_choose(review, array('electronics', 'shipping', 'entertainment')) AS topic,
+          |       ai_decide_classify(review, array('electronics', 'shipping', 'entertainment')) AS topic,
           |       ai_score(review, 'How satisfied is the reviewer?', array('angry', 'neutral', 'delighted')) AS satisfaction
           |FROM reviews ORDER BY id""".stripMargin).collect()
     }

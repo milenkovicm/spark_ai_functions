@@ -68,7 +68,7 @@ class AiDecisionSuite extends SparkSessionSuite with AdaptiveSparkPlanHelper {
       """SELECT id,
         |       ai_if(body, 'refund requested')                                AS refund,
         |       ai_probability(body, 'refund requested')                       AS p,
-        |       ai_choose(body, array('billing', 'technical', 'other'))        AS team,
+        |       ai_decide_classify(body, array('billing', 'technical', 'other'))        AS team,
         |       ai_score(body, 'How frustrated?', array('calm', 'annoyed', 'furious')) AS frustration
         |FROM tickets ORDER BY id""".stripMargin)
     assert(df.schema.map(_.dataType) == Seq(df.schema.head.dataType, BooleanType, DoubleType, StringType, DoubleType))
@@ -124,7 +124,7 @@ class AiDecisionSuite extends SparkSessionSuite with AdaptiveSparkPlanHelper {
 
   apiTest("GROUP BY and ORDER BY decision results") { _ =>
     val (_, grouped) = run(
-      "SELECT ai_choose(body, array('billing', 'technical')) AS team, count(*) FROM tickets WHERE id <= 3 GROUP BY 1")
+      "SELECT ai_decide_classify(body, array('billing', 'technical')) AS team, count(*) FROM tickets WHERE id <= 3 GROUP BY 1")
     assert(grouped.map(r => r.getString(0) -> r.getLong(1)).toMap == Map("billing" -> 2L, "technical" -> 1L))
     val (_, ordered) = run(
       "SELECT id FROM tickets WHERE id <= 3 ORDER BY ai_score(body, 'frustration', array('calm', 'annoyed', 'furious')) DESC LIMIT 2")
@@ -133,9 +133,9 @@ class AiDecisionSuite extends SparkSessionSuite with AdaptiveSparkPlanHelper {
 
   test("default column names show the call as written and stay distinct") {
     val df = spark.sql(
-      "SELECT ai_if(body, 'refund'), ai_if(body, 'urgent'), ai_choose(body, array('a', 'b'), model => 'm') FROM tickets")
+      "SELECT ai_if(body, 'refund'), ai_if(body, 'urgent'), ai_decide_classify(body, array('a', 'b'), model => 'm') FROM tickets")
     assert(df.columns.toSeq == Seq(
-      "ai_if(body, refund)", "ai_if(body, urgent)", "ai_choose(body, array(a, b), model => m)"))
+      "ai_if(body, refund)", "ai_if(body, urgent)", "ai_decide_classify(body, array(a, b), model => m)"))
   }
 
   apiTest("global ORDER BY on decision results calls the model once per row") { _ =>
@@ -196,7 +196,7 @@ class AiDecisionSuite extends SparkSessionSuite with AdaptiveSparkPlanHelper {
   test("[systemone] wire format") {
     withConf(AiConfig.DecisionApi -> AiConfig.SystemOne) {
       run(
-        """SELECT ai_if(body, 'refund'), ai_choose(body, '{"billing": "Payments", "technical": null}')
+        """SELECT ai_if(body, 'refund'), ai_decide_classify(body, '{"billing": "Payments", "technical": null}')
           |FROM tickets WHERE id = 1""".stripMargin)
       val body = server.lastDecisionRequest
       assert(body.get("state").asText().startsWith("I want a refund"))
@@ -242,9 +242,9 @@ class AiDecisionSuite extends SparkSessionSuite with AdaptiveSparkPlanHelper {
 
   test("arguments are validated at analysis") {
     def error(sql: String): String = messages(intercept[Throwable](spark.sql(sql)))
-    assert(error("SELECT ai_choose(body, array('only')) FROM tickets").contains("2 to 255 labels"))
-    assert(error("SELECT ai_choose(body, array('a', 'a')) FROM tickets").contains("distinct"))
-    assert(error("SELECT ai_choose(body, array(body, 'a')) FROM tickets").contains("constant"))
+    assert(error("SELECT ai_decide_classify(body, array('only')) FROM tickets").contains("2 to 255 labels"))
+    assert(error("SELECT ai_decide_classify(body, array('a', 'a')) FROM tickets").contains("distinct"))
+    assert(error("SELECT ai_decide_classify(body, array(body, 'a')) FROM tickets").contains("constant"))
     assert(error("SELECT ai_score(body, 'x', array('1','2','3','4','5','6','7','8','9','10','11')) FROM tickets")
       .contains("2 to 10 levels"))
     assert(error("SELECT ai_if(body, 'x', modle => 'm') FROM tickets").contains("unknown argument 'modle'"))

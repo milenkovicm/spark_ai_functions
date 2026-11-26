@@ -6,7 +6,7 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.types.{DataType, StringType}
 
 /**
- * A decision-model call (`ai_probability`, `ai_if`, `ai_choose`, `ai_score`, `ai_decide`): asks
+ * A decision-model call (`ai_probability`, `ai_if`, `ai_decide_classify`, `ai_score`, `ai_decide`): asks
  * `questions` about `input` and converts the answers according to `output`.
  *
  * Everything except `input` is a constant, parsed and validated when the function is built.

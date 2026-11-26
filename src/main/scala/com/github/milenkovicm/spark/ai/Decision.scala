@@ -63,7 +63,7 @@ object DecisionOutput {
   case object If extends DecisionOutput {
     override def dataType(questions: Seq[(String, Question)]): DataType = BooleanType
   }
-  /** `ai_choose`: the most probable label. */
+  /** `ai_decide_classify`: the most probable label. */
   case object Choose extends DecisionOutput {
     override def dataType(questions: Seq[(String, Question)]): DataType = StringType
   }
@@ -205,7 +205,7 @@ object Decision {
     catch { case e: Exception => throw new IllegalArgumentException(s"$function: invalid JSON: ${e.getMessage}") }
 
   /**
-   * Parses `ai_decide` questions, in Spice's format:
+   * Parses `ai_decide` questions, in the format:
    * `{"id": {"type": "noul|choice|score", "instructions": "...", "criteria": ...}}`.
    * `predicate` is accepted for `noul`; choice criteria are a label array or a label→description
    * object, score criteria the levels lowest first.

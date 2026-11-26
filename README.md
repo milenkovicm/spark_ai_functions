@@ -3,8 +3,8 @@
 AI SQL functions for Apache Spark, similar to
 [Databricks AI Functions](https://docs.databricks.com/aws/en/large-language-models/ai-functions).
 They are backed by any OpenAI-compatible endpoint: OpenAI, Ollama, vLLM, LM Studio, and others.
-[Decision functions](#decision-functions) (`ai_if`, `ai_probability`, `ai_choose`, `ai_score`,
-`ai_decide`) use [decision models](https://spice.ai/blog/decision-models) for closed questions
+[Decision functions](#decision-functions) (`ai_if`, `ai_probability`, `ai_decide_classify`, `ai_score`,
+`ai_decide`) use decision models for closed questions
 and return calibrated probabilities.
 
 ```sql
@@ -98,7 +98,7 @@ Ollama processes only `OLLAMA_NUM_PARALLEL` requests at a time. Raise it to bene
 | `ai_gen(prompt)` | Answers `prompt` with the default model. |
 | `ai_summarize(text)` | Summarizes `text` in at most 50 words. |
 | `ai_analyze_sentiment(text)` | Returns `positive`, `negative`, `neutral` or `mixed`. |
-| `ai_classify(text, labels)` | Returns the label from the array `labels` that best fits `text`. (See `ai_choose` for the decision-model version.) |
+| `ai_classify(text, labels)` | Returns the label from the array `labels` that best fits `text`. (See `ai_decide_classify` for the decision-model version.) |
 | `ai_translate(text, language)` | Translates `text` into `language`. |
 | `ai_extract(text, labels)` | Extracts entities of the types in `labels` and returns them as a JSON string. |
 | `ai_fix_grammar(text)` | Corrects grammar and spelling. |
@@ -145,7 +145,7 @@ spark.conf.set("spark.sql.ai.decisionModel", "nimble:latest")
 |---|---|
 | `ai_probability(input, condition)` | `DOUBLE` from 0 to 1: the probability that `condition` holds for `input`. |
 | `ai_if(input, condition)` | `BOOLEAN`: `true` when that probability is above 0.5. |
-| `ai_choose(input, labels[, instructions => '...'])` | `STRING`: the most probable of `labels`. `labels` is a constant `array(...)` of 2 to 255 distinct labels, or a JSON object string mapping each label to a description (or `null`). |
+| `ai_decide_classify(input, labels[, instructions => '...'])` | `STRING`: the most probable of `labels`. `labels` is a constant `array(...)` of 2 to 255 distinct labels, or a JSON object string mapping each label to a description (or `null`). |
 | `ai_score(input, instructions, levels)` | `DOUBLE` from 0 to n−1: the probability-weighted, 0-based index into `levels` (2 to 10 levels, lowest first). It can fall between two levels. |
 | `ai_decide(input, questions)` | `STRUCT` with one field per question. See below. |
 
@@ -158,8 +158,6 @@ are sent as JSON, binary must be cast to string, and other types are sent as tex
 The model can decline a question. Under `on_error => 'null'` that answer is `NULL`, and under
 `'fail'` the query fails.
 
-`ai_choose` is Spice's `ai_classify`. The name `ai_classify` stays with the chat-prompt helper above.
-
 ```sql
 -- yes/no as a filter: the plain predicate runs first, only open tickets are sent to the model
 SELECT id, subject FROM tickets
@@ -170,8 +168,8 @@ SELECT id, ai_probability(body, 'The customer threatens to cancel') AS churn_ris
 FROM tickets ORDER BY churn_risk DESC;
 
 SELECT id,
-       ai_choose(body, array('billing', 'technical', 'other'))                           AS team,
-       ai_choose(body, '{"billing": "Payments and refunds", "technical": null}')         AS team2,
+       ai_decide_classify(body, array('billing', 'technical', 'other'))                   AS team,
+       ai_decide_classify(body, '{"billing": "Payments and refunds", "technical": null}') AS team2,
        ai_score(body, 'How frustrated is the customer?', array('calm', 'annoyed', 'furious')) AS frustration
 FROM tickets;
 ```
@@ -215,7 +213,7 @@ request, not two. A request that would go over the API's question limit (64 for 
 | Value | Endpoint | LangChain4j class |
 |---|---|---|
 | `systemone` (default) | Ollama System One API, `POST /v1/systemone` | `OllamaDecisionModel` |
-| `decisions` | OpenAI-compatible Decisions API, `POST {baseUrl}/decisions` (OpenAI, Spice) | `OpenAiDecisionModel` |
+| `decisions` | OpenAI-compatible Decisions API, `POST {baseUrl}/decisions` (OpenAI) | `OpenAiDecisionModel` |
 
 The endpoint is `spark.sql.ai.decisionBaseUrl`, or `spark.sql.ai.baseUrl` when that isn't set. For
 `systemone` a trailing `/v1` is dropped, so `http://127.0.0.1:11434/v1` works for both chat and
@@ -292,7 +290,7 @@ spark.table("reviews")
 | `spark.sql.ai.failOnError` | `true` | `false`: failed requests return `NULL`. |
 | `spark.sql.ai.partitions` | unset (off) | Number of partitions (tasks) that make AI calls. See [Limiting parallelism](#limiting-parallelism). |
 | `spark.sql.ai.partitionMode` | `shuffle` | `shuffle` or `coalesce`: how rows are redistributed when `spark.sql.ai.partitions` is set. |
-| `spark.sql.ai.decisionModel` | (none) | Decision model used by `ai_if`, `ai_probability`, `ai_choose`, `ai_score` and `ai_decide`, for example `nimble:latest`. |
+| `spark.sql.ai.decisionModel` | (none) | Decision model used by `ai_if`, `ai_probability`, `ai_decide_classify`, `ai_score` and `ai_decide`, for example `nimble:latest`. |
 | `spark.sql.ai.decisionApi` | `systemone` | `systemone` (Ollama `/v1/systemone`) or `decisions` (OpenAI-compatible `/v1/decisions`). |
 | `spark.sql.ai.decisionBaseUrl` | `spark.sql.ai.baseUrl` | Base URL for decision requests. |
 

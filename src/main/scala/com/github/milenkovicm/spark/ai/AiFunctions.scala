@@ -128,12 +128,13 @@ object AiFunctions {
         "True when a decision model finds `condition` more likely than not for `input`.", 2) { (args, _) =>
       Seq("answer" -> Decision.noul("ai_if", constantString("ai_if", "condition", args(1)))) -> DecisionOutput.If
     },
-    decision("ai_choose",
+    decision("ai_decide_classify",
       "_FUNC_(input, labels[, instructions => text][, model => name][, on_error => 'fail'|'null']) - " +
         "The label that best fits `input`, from a decision model. `labels` is an array of strings or a " +
         "JSON object mapping label to description.", 2, Set("instructions")) { (args, named) =>
       val instructions = named.getOrElse("instructions", "Which label best fits the input?")
-      Seq("answer" -> Decision.choice("ai_choose", instructions, constantOptions("ai_choose", "labels", args(1)))) ->
+      val labels = constantOptions("ai_decide_classify", "labels", args(1))
+      Seq("answer" -> Decision.choice("ai_decide_classify", instructions, labels)) ->
         DecisionOutput.Choose
     },
     decision("ai_score",
