@@ -7,6 +7,12 @@ They are backed by any OpenAI-compatible endpoint: OpenAI, Ollama, vLLM, LM Stud
 `ai_decide`) use decision models for closed questions
 and return calibrated probabilities.
 
+> [!WARNING]
+> This is a vibe-coded solution built as a proof of concept. It has not been fully reviewed, so use it with caution.
+
+> [!NOTE]
+> [datafusion_ai_functions](https://github.com/milenkovicm/datafusion_ai_functions) provides similar functionality for [Apache DataFusion](https://datafusion.apache.org/).
+
 ```sql
 SELECT id,
        ai_analyze_sentiment(review)                                  AS sentiment,
