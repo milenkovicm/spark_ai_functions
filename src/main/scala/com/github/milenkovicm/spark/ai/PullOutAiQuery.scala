@@ -20,7 +20,7 @@ import org.apache.spark.sql.catalyst.rules.Rule
  */
 object PullOutAiQuery extends Rule[LogicalPlan] {
 
-  private def hasAi(e: Expression): Boolean = e.exists(_.isInstanceOf[AiExpression])
+  import AiExpression.hasAi
 
   /** Outermost calls only; nested ones travel with their parent. */
   private def outermost(e: Expression): Seq[AiExpression] = e match {

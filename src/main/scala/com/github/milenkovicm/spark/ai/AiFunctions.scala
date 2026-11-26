@@ -2,7 +2,7 @@ package com.github.milenkovicm.spark.ai
 
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{ArrayJoin, Cast, Concat, Expression, ExpressionInfo, Literal, NamedArgumentExpression, StructsToJson}
-import org.apache.spark.sql.catalyst.util.ArrayData
+import org.apache.spark.sql.catalyst.util.{toPrettySQL, ArrayData}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, MapType, StringType, StructType}
 
@@ -18,13 +18,25 @@ object AiFunctions {
   private def fail(name: String, expected: String, args: Seq[Expression]) =
     throw new IllegalArgumentException(s"$name expects $expected, got ${args.size} argument(s)")
 
+  /**
+   * The call as the user wrote it, in the form Spark uses for default column names
+   * (`toPrettySQL`: no qualifiers or quotes), e.g. `ai_if(body, refund)`.
+   */
+  private def display(name: String, args: Seq[Expression]): String = {
+    val shown = args.map {
+      case NamedArgumentExpression(key, value) => s"$key => ${toPrettySQL(value)}"
+      case e => toPrettySQL(e)
+    }
+    s"$name(${shown.mkString(", ")})"
+  }
+
   /** Builds `prompt prefix + text + suffix` without evaluating anything at analysis time. */
   private def template(parts: Expression*): Expression = Concat(parts)
 
   private def helper(name: String, usage: String, arity: Int)(prompt: Seq[Expression] => Expression) =
     (FunctionIdentifier(name), info(name, usage), { (args: Seq[Expression]) =>
       if (args.size != arity) fail(name, s"$arity argument(s)", args)
-      AiQuery(defaultModel, prompt(args), Literal(null))
+      AiQuery(defaultModel, prompt(args), Literal(null), Some(display(name, args)))
     }: Builder)
 
   private val aiQuery = (FunctionIdentifier("ai_query"),
@@ -100,7 +112,8 @@ object AiFunctions {
       val model = named.get("model").orElse(AiConfig.decisionModel(SQLConf.get)).getOrElse(
         throw new IllegalArgumentException(s"$name: pass model => '...' or set ${AiConfig.DecisionModel}"))
       val (questions, output) = build(pos, named)
-      AiDecision(name, decisionInput(name, pos.head), questions, output, model, onError(name, named.get("on_error")))
+      AiDecision(name, decisionInput(name, pos.head), questions, output, model, onError(name, named.get("on_error")),
+        display(name, args))
     }: Builder)
 
   private val decisionFunctions = Seq(
@@ -135,7 +148,9 @@ object AiFunctions {
         "Answers several questions about `input` in one request and returns a struct with one field per " +
         "question. `questions` is a JSON object: {\"id\": {\"type\": \"noul|choice|score\", " +
         "\"instructions\": \"...\", \"criteria\": ...}}.", 2) { (args, _) =>
-      Decision.parseQuestions("ai_decide", constantString("ai_decide", "questions", args(1))) ->
+      // Limited by the session's decision API: one call's questions always go in one request.
+      val max = AiConfig.maxQuestions(AiConfig.decisionApi(SQLConf.get))
+      Decision.parseQuestions("ai_decide", constantString("ai_decide", "questions", args(1)), max) ->
         DecisionOutput.Decide
     })
 

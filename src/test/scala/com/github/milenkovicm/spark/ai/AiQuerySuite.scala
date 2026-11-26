@@ -185,6 +185,21 @@ class AiQuerySuite extends SparkSessionSuite with AdaptiveSparkPlanHelper {
   test("endpoint must be a constant") {
     val e = intercept[Exception](spark.sql("SELECT ai_query(text, text) FROM t").collect())
     assert(e.getMessage.contains("endpoint must be a constant string"))
+    val n = intercept[Exception](spark.sql("SELECT ai_query(CAST(NULL AS STRING), text) FROM t").collect())
+    assert(n.getMessage.contains("endpoint must not be null"))
+  }
+
+  test("misspelled params and invalid settings fail with a clear error") {
+    val p = intercept[Exception](spark.sql(
+      "SELECT ai_query('stub', text, named_struct('temprature', 0.0)) FROM t").collect())
+    assert(p.getMessage.contains("unknown params temprature"))
+    val v = intercept[Exception](spark.sql(
+      "SELECT ai_query('stub', text, named_struct('max_tokens', 'lots')) FROM t").collect())
+    assert(v.getMessage.contains("ai_query param max_tokens must be an integer, got 'lots'"))
+    withConf(AiConfig.Concurrency -> "many") {
+      val c = intercept[Exception](spark.sql("SELECT ai_query('stub', text) FROM t").collect())
+      assert(c.getMessage.contains(s"${AiConfig.Concurrency} must be an integer, got 'many'"))
+    }
   }
 
   test("helper functions are prompt templates over ai_query") {
@@ -197,6 +212,11 @@ class AiQuerySuite extends SparkSessionSuite with AdaptiveSparkPlanHelper {
     assert(classify.endsWith("Text: I love it"))
     assert(translate.contains("to German") && translate.endsWith("hello"))
     assert(gen == "echo:hi")
+  }
+
+  test("helper functions are named after the call, not the generated prompt") {
+    val df = spark.sql("SELECT ai_summarize(text), ai_translate(text, 'German'), ai_query('stub', text) FROM t")
+    assert(df.columns.toSeq == Seq("ai_summarize(text)", "ai_translate(text, German)", "ai_query(stub, text, NULL)"))
   }
 
   test("DataFrame API via expr") {
@@ -284,6 +304,21 @@ class AiQuerySuite extends SparkSessionSuite with AdaptiveSparkPlanHelper {
       assert(rows.map(_.getLong(0)).toSeq == Seq(39L, 38L, 37L))
       assert(server.requests == 3)
       assert(aiShuffles(df).isEmpty)
+    }
+  }
+
+  test("global ORDER BY on the model output calls the model once per row") {
+    val (_, rows) = run("SELECT id, ai_query('stub', text) AS a FROM t4 ORDER BY a")
+    assert(rows.map(_.getString(1)).toSeq == (0L until 40L).map(i => s"echo:prompt $i").sorted)
+    assert(server.requests == 40)
+
+    // Already a single partition: sorted in place, no extra shuffle.
+    withConf(AiConfig.Partitions -> "1") {
+      val (df, rows1) = run("SELECT id, ai_query('stub', text) AS a FROM t4 ORDER BY a DESC")
+      assert(rows1.map(_.getString(1)).toSeq == rows.map(_.getString(1)).toSeq.reverse)
+      assert(server.requests == 40)
+      val shuffles = collect(df.queryExecution.executedPlan) { case e: ShuffleExchangeExec => e }
+      assert(shuffles.map(_.outputPartitioning) == Seq(SinglePartition))
     }
   }
 

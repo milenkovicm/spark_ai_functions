@@ -79,7 +79,6 @@ object DecisionOutput {
 }
 
 object Decision {
-  val MaxQuestions = 64
 
   private val probabilities = MapType(StringType, DoubleType, valueContainsNull = true)
 
@@ -211,7 +210,7 @@ object Decision {
    * `predicate` is accepted for `noul`; choice criteria are a label array or a label→description
    * object, score criteria the levels lowest first.
    */
-  def parseQuestions(function: String, json: String): Seq[(String, Question)] = {
+  def parseQuestions(function: String, json: String, maxQuestions: Int): Seq[(String, Question)] = {
     val root = readJson(function, json)
     require(root.isObject, function, "questions must be a JSON object mapping question id to question")
     val questions = root.properties().asScala.toSeq.map { e =>
@@ -229,8 +228,8 @@ object Decision {
         case other => throw new IllegalArgumentException(s"$name: type must be noul, choice or score, got '$other'")
       }
     }.toSeq
-    require(questions.nonEmpty && questions.size <= MaxQuestions, function,
-      s"expects 1 to $MaxQuestions questions, got ${questions.size}")
+    require(questions.nonEmpty && questions.size <= maxQuestions, function,
+      s"expects 1 to $maxQuestions questions, got ${questions.size}")
     questions
   }
 }

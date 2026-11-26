@@ -3,7 +3,7 @@ package com.github.milenkovicm.spark.ai
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, Expression, IntegerLiteral, NamedExpression, PredicateHelper, SortOrder}
 import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, Limit, LogicalPlan, Project, ReturnAnswer, Sort, SortHint}
-import org.apache.spark.sql.catalyst.plans.physical.{RangePartitioning, RoundRobinPartitioning, SinglePartition, UnknownPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{OrderedDistribution, RangePartitioning, RoundRobinPartitioning, SinglePartition, UnknownPartitioning}
 import org.apache.spark.sql.execution.{CoalesceExec, FilterExec, ProjectExec, SortExec, SparkPlan, SparkStrategy, TakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.exchange.{REPARTITION_BY_NUM, ShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
@@ -14,10 +14,9 @@ import org.apache.spark.sql.internal.SQLConf
  * strategies, so it sees these nodes before e.g. `FileSourceStrategy` folds them into a scan.
  */
 case class AiStrategy(session: SparkSession) extends SparkStrategy with PredicateHelper {
+  import AiExpression.hasAi
 
   private def conf: SQLConf = session.sessionState.conf
-
-  private def hasAi(e: Expression): Boolean = e.exists(_.isInstanceOf[AiExpression])
 
   /**
    * A projection containing ai_query: a `Project`, or an `Aggregate` whose output calls ai_query
@@ -45,6 +44,7 @@ case class AiStrategy(session: SparkSession) extends SparkStrategy with Predicat
   private object TopK {
     def unapply(plan: LogicalPlan): Option[(Int, Seq[SortOrder], Seq[NamedExpression], LogicalPlan)] =
       plan match {
+        case ReturnAnswer(root) => unapply(root)
         case Limit(IntegerLiteral(limit), Project(list, Sort(order, true, child, _)))
             if list.exists(hasAi) =>
           Some((limit, order, list, child))
@@ -56,9 +56,6 @@ case class AiStrategy(session: SparkSession) extends SparkStrategy with Predicat
   }
 
   override def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
-    case ReturnAnswer(TopK(limit, order, list, child)) =>
-      project(list, TakeOrderedAndProjectExec(limit, order, child.output, planLater(child), 0)) :: Nil
-
     case TopK(limit, order, list, child) =>
       project(list, TakeOrderedAndProjectExec(limit, order, child.output, planLater(child), 0)) :: Nil
 
@@ -72,6 +69,14 @@ case class AiStrategy(session: SparkSession) extends SparkStrategy with Predicat
     case Sort(order, global, Project(outer, AiProject(list, child)), hint)
         if !outer.exists(hasAi) && sortableBelow(order, child) =>
       ProjectExec(outer, project(list, sortBelow(order, global, child, hint))) :: Nil
+
+    // Sort keys that depend on the model output (e.g. `ORDER BY ai_score(...)`): call the model
+    // first, then sort its output without sampling it twice.
+    case Sort(order, true, AiProject(list, child), _) =>
+      sortAbove(order, project(list, planLater(child))) :: Nil
+
+    case Sort(order, true, Project(outer, AiProject(list, child)), _) if !outer.exists(hasAi) =>
+      sortAbove(order, ProjectExec(outer, project(list, planLater(child)))) :: Nil
 
     case AiProject(list, child) =>
       project(list, planLater(child)) :: Nil
@@ -103,6 +108,21 @@ case class AiStrategy(session: SparkSession) extends SparkStrategy with Predicat
       case Some(_) =>
         SortExec(order, global = false, distribute(planLater(child)))
     }
+
+  /**
+   * Globally sorts `child`, whose rows carry model output. A range-partitioning exchange samples
+   * its input in a separate job before the shuffle itself, which would run the model calls twice,
+   * so a round-robin shuffle goes in between: both jobs then read its output, written once.
+   */
+  private def sortAbove(order: Seq[SortOrder], child: SparkPlan): SparkPlan = {
+    val n = conf.numShufflePartitions
+    val sortInput =
+      if (child.outputPartitioning.satisfies(OrderedDistribution(order))) child
+      else if (n == 1) ShuffleExchangeExec(SinglePartition, child)
+      else ShuffleExchangeExec(RangePartitioning(order, n),
+        ShuffleExchangeExec(RoundRobinPartitioning(n), child, REPARTITION_BY_NUM))
+    SortExec(order, global = true, sortInput)
+  }
 
   private def project(list: Seq[NamedExpression], child: SparkPlan): SparkPlan = {
     val (exec, rewritten) = extract(list, child)
@@ -159,7 +179,7 @@ case class AiStrategy(session: SparkSession) extends SparkStrategy with Predicat
       i -> ChatRequest(q.request, AiCall(AiConfig.resolve(conf, q.modelName, params), AiConfig.failOnError(conf, params)), i)
     }
     val decisions = calls.zipWithIndex.collect { case (d: AiDecision, i) =>
-      (d, i, AiConfig.resolveDecision(conf, d.model), AiConfig.decisionFailOnError(conf, d.onError))
+      (d, i, AiConfig.resolveDecision(conf, d.model), AiConfig.failOnError(conf, d.onError))
     }
     val groups = decisions.groupBy { case (d, _, config, fail) => (d.input.canonicalized, config, fail) }
     val merged = groups.values.toSeq.flatMap { group =>

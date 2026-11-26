@@ -14,6 +14,8 @@ import org.apache.spark.sql.types.{DataType, StringType}
  *
  * @param input   the text the questions are about (struct/map/array inputs are already JSON)
  * @param onError `Some(false)` for `on_error => 'null'`, `Some(true)` for `'fail'`, else session default
+ * @param display the call as written, e.g. `ai_if(body, 'refund requested')`; used as its SQL text,
+ *                and so as the default column name
  */
 case class AiDecision(
     function: String,
@@ -21,7 +23,8 @@ case class AiDecision(
     questions: Seq[(String, Question)],
     output: DecisionOutput,
     model: String,
-    onError: Option[Boolean])
+    onError: Option[Boolean],
+    display: String)
   extends AiExpression {
 
   override def children: Seq[Expression] = Seq(input)
@@ -38,9 +41,9 @@ case class AiDecision(
     if (input.dataType.isInstanceOf[StringType]) TypeCheckSuccess
     else TypeCheckFailure(s"$function: input must be a string, got ${input.dataType.simpleString}")
 
-  override def toString: String = s"$function($input, model=$model)"
+  override def toString: String = s"$display [model=$model]"
 
-  override def sql: String = s"$function(${input.sql})"
+  override def sql: String = display
 
   override protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]): AiDecision =
     copy(input = newChildren.head)

@@ -131,6 +131,26 @@ class AiDecisionSuite extends SparkSessionSuite with AdaptiveSparkPlanHelper {
     assert(ordered.map(_.getInt(0)).toSeq == Seq(2, 1))
   }
 
+  test("default column names show the call as written and stay distinct") {
+    val df = spark.sql(
+      "SELECT ai_if(body, 'refund'), ai_if(body, 'urgent'), ai_choose(body, array('a', 'b'), model => 'm') FROM tickets")
+    assert(df.columns.toSeq == Seq(
+      "ai_if(body, refund)", "ai_if(body, urgent)", "ai_choose(body, array(a, b), model => m)"))
+  }
+
+  apiTest("global ORDER BY on decision results calls the model once per row") { _ =>
+    val (_, ordered) = run(
+      "SELECT id FROM tickets WHERE id <= 3 ORDER BY ai_score(body, 'frustration', array('calm', 'annoyed', 'furious')) DESC")
+    assert(ordered.map(_.getInt(0)).toSeq == Seq(2, 1, 3))
+    assert(server.requests == 3)
+    val (_, fields) = run(
+      """SELECT id, d.mood.score FROM (SELECT id, ai_decide(body, '{
+        |  "mood": {"type": "score", "instructions": "How frustrated?", "criteria": ["calm", "annoyed", "furious"]}
+        |}') AS d FROM tickets WHERE id <= 3) ORDER BY d.mood.score""".stripMargin)
+    assert(fields.map(_.getInt(0)).toSeq == Seq(3, 1, 2))
+    assert(server.requests == 3)
+  }
+
   apiTest("model and on_error named arguments") { api =>
     run("SELECT ai_if(body, 'refund', model => 'other-model') FROM tickets WHERE id = 1")
     assert(server.lastDecisionRequest.get("model").asText() == "other-model")
@@ -236,6 +256,15 @@ class AiDecisionSuite extends SparkSessionSuite with AdaptiveSparkPlanHelper {
     assert(error("SELECT ai_if(cast(body AS binary), 'x') FROM tickets").contains("binary"))
     withConf(AiConfig.DecisionModel -> "") {
       assert(error("SELECT ai_if(body, 'x') FROM tickets").contains(AiConfig.DecisionModel))
+    }
+    // ai_decide accepts as many questions as the session's decision API takes in one request
+    val many = (1 to 100).map(i => s"\"q$i\": {\"type\": \"noul\", \"instructions\": \"x\"}").mkString("{", ", ", "}")
+    withConf(AiConfig.DecisionApi -> AiConfig.SystemOne) {
+      assert(error(s"SELECT ai_decide(body, '$many') FROM tickets").contains("1 to 64 questions, got 100"))
+    }
+    withConf(AiConfig.DecisionApi -> AiConfig.Decisions) {
+      assert(spark.sql(s"SELECT ai_decide(body, '$many') AS d FROM tickets").schema("d").dataType
+        .asInstanceOf[StructType].size == 100)
     }
     withConf(AiConfig.DecisionApi -> "grpc") {
       assert(messages(failure("SELECT ai_if(body, 'x') FROM tickets")).contains("must be systemone or decisions"))

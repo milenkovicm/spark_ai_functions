@@ -111,7 +111,7 @@ Every helper except `ai_query` is a prompt template over `ai_query` and uses `sp
 
 ### `ai_query` parameters
 
-`model` must be a constant string. The optional third argument is a constant struct:
+`model` must be a constant, non-null string. The optional third argument is a constant struct; fields other than the ones below are rejected at analysis, so a typo does not go unnoticed:
 
 ```sql
 SELECT ai_query('qwen2.5:1.5b-instruct',
@@ -179,7 +179,9 @@ FROM tickets;
 ### `ai_decide`
 
 `ai_decide` asks several questions at once. `questions` is a JSON object that maps a question id
-to a question with a `type`, `instructions` and, for `choice` and `score`, `criteria`:
+to a question with a `type`, `instructions` and, for `choice` and `score`, `criteria`. It takes
+up to as many questions as the session's decision API accepts in one request (64 for systemone,
+200 for decisions):
 
 | `type` | `criteria` | Struct field |
 |---|---|---|
@@ -391,6 +393,7 @@ The planner strategy `AiStrategy` runs before Spark's built-in strategies and ha
 | `Filter` with calls | Plain conjuncts go into a `FilterExec` **below** the `AiQueryExec`; conjuncts with calls go in a `FilterExec` above it. |
 | `Aggregate` whose output calls `ai_query` over grouping keys or aggregates | The `Aggregate` computes the keys and aggregates, and `ProjectExec(AiQueryExec)` above it evaluates the calls. This happens at planning time because `CollapseProject` would merge such a `Project` back into the `Aggregate`. |
 | `Sort` on columns that don't depend on model output | The sort runs **below** the `AiQueryExec`. A global sort samples its input in an extra job, which would otherwise call the model twice per row. This also works through a plain `Project` over the call, as in `SELECT d.a FROM (SELECT ai_decide(...) AS d ...) ORDER BY id`. |
+| Global `Sort` on model output, e.g. `ORDER BY ai_score(...)` | A round-robin shuffle goes between the `AiQueryExec` and the range-partitioning exchange of the sort. The range partitioner's sampling job reads that shuffle's output, so the model is called once per row instead of twice. The shuffle is skipped when the calls already run in a single partition (`spark.sql.ai.partitions=1`). |
 | `ORDER BY … LIMIT n` | `TakeOrderedAndProjectExec` runs below the `AiQueryExec`, so only `n` rows are sent to the model. |
 
 For each projection the strategy:
@@ -442,7 +445,6 @@ With a stub endpoint that takes 200 ms per request, 200 rows in a single partiti
 
 ## Limitations
 
-- **Sorting by model output:** `ORDER BY ai_query(...)` without a limit calls the model twice per row, because Spark samples the input for range partitioning. Cache the result first (`.cache()`) if that matters.
 - **Join conditions:** `ai_query` in a join condition is rejected by Spark (`INVALID_NON_DETERMINISTIC_EXPRESSIONS`). Compute it in a subquery first.
 - **Constant arguments:** `model` and `params` must be constants, and so must every decision-function argument except `input`.
 - **Retried tasks:** results are not cached, so a retried Spark task or a re-executed stage sends its requests again.

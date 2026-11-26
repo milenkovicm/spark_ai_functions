@@ -13,7 +13,12 @@ case class AiConfig(
     temperature: Option[Double],
     maxTokens: Option[Int],
     timeoutMs: Long,
-    maxRetries: Int)
+    maxRetries: Int) {
+
+  override def toString: String =
+    s"AiConfig($baseUrl, secret=${AiConfig.mask(apiKey)}, $model, temperature=$temperature, " +
+      s"maxTokens=$maxTokens, timeoutMs=$timeoutMs, maxRetries=$maxRetries)"
+}
 
 /**
  * Optional redistribution of the rows sent to the model: only `partitions` tasks make AI calls,
@@ -36,7 +41,11 @@ case class DecisionConfig(
     maxRetries: Int) {
 
   /** Most questions the API accepts in one request. */
-  def maxQuestions: Int = if (api == AiConfig.SystemOne) 64 else 200
+  def maxQuestions: Int = AiConfig.maxQuestions(api)
+
+  override def toString: String =
+    s"DecisionConfig($baseUrl, secret=${AiConfig.mask(apiKey)}, $model, api=$api, " +
+      s"timeoutMs=$timeoutMs, maxRetries=$maxRetries)"
 }
 
 object AiConfig {
@@ -60,18 +69,44 @@ object AiConfig {
   val Decisions = "decisions"
   private val DefaultBaseUrl = "http://127.0.0.1:11434/v1"
 
+  /** Most questions `api` accepts in one request. */
+  def maxQuestions(api: String): Int = if (api == SystemOne) 64 else 200
+
+  /** Keeps secrets out of `toString`, and so out of plan dumps and error messages. */
+  private[ai] def mask(secret: String): String =
+    if (secret == null || secret == "none") String.valueOf(secret) else "***"
+
   private def get(conf: SQLConf, key: String): Option[String] =
     Option(conf.getConfString(key, null)).map(_.trim).filter(_.nonEmpty)
+
+  /** Parses a setting or param, naming it in the error instead of a bare `NumberFormatException`. */
+  private def parse[T](key: String, value: String, expected: String)(f: String => T): T =
+    try f(value.trim)
+    catch {
+      case _: IllegalArgumentException =>
+        throw new IllegalArgumentException(s"$key must be $expected, got '$value'")
+    }
+
+  private def double(key: String)(v: String): Double = parse(key, v, "a number")(_.toDouble)
+  private def int(key: String)(v: String): Int = parse(key, v, "an integer")(_.toInt)
+  private def long(key: String)(v: String): Long = parse(key, v, "an integer")(_.toLong)
+  private def bool(key: String)(v: String): Boolean = parse(key, v, "true or false")(_.toBoolean)
 
   /** Builds the endpoint config for `model`, letting per-call `params` override session defaults. */
   def resolve(conf: SQLConf, model: String, params: Map[String, String]): AiConfig = AiConfig(
     baseUrl = get(conf, BaseUrl).getOrElse(DefaultBaseUrl),
     apiKey = apiKey(conf),
     model = model,
-    temperature = params.get("temperature").orElse(get(conf, Temperature)).map(_.toDouble),
-    maxTokens = params.get("max_tokens").orElse(get(conf, MaxTokens)).map(_.toInt),
-    timeoutMs = get(conf, TimeoutMs).map(_.toLong).getOrElse(120000L),
-    maxRetries = get(conf, MaxRetries).map(_.toInt).getOrElse(2))
+    temperature = params.get("temperature").map(double("ai_query param temperature"))
+      .orElse(get(conf, Temperature).map(double(Temperature))),
+    maxTokens = params.get("max_tokens").map(int("ai_query param max_tokens"))
+      .orElse(get(conf, MaxTokens).map(int(MaxTokens))),
+    timeoutMs = timeoutMs(conf),
+    maxRetries = maxRetries(conf))
+
+  private def timeoutMs(conf: SQLConf): Long = get(conf, TimeoutMs).map(long(TimeoutMs)).getOrElse(120000L)
+
+  private def maxRetries(conf: SQLConf): Int = get(conf, MaxRetries).map(int(MaxRetries)).getOrElse(2)
 
   private def apiKey(conf: SQLConf): String =
     get(conf, ApiKey).orElse(sys.env.get("OPENAI_API_KEY")).getOrElse("none")
@@ -82,8 +117,8 @@ object AiConfig {
     apiKey = apiKey(conf),
     model = model,
     api = decisionApi(conf),
-    timeoutMs = get(conf, TimeoutMs).map(_.toLong).getOrElse(120000L),
-    maxRetries = get(conf, MaxRetries).map(_.toInt).getOrElse(2))
+    timeoutMs = timeoutMs(conf),
+    maxRetries = maxRetries(conf))
 
   def decisionApi(conf: SQLConf): String = get(conf, DecisionApi).getOrElse(SystemOne).toLowerCase match {
     case api @ (SystemOne | Decisions) => api
@@ -92,17 +127,17 @@ object AiConfig {
 
   def decisionModel(conf: SQLConf): Option[String] = get(conf, DecisionModel)
 
-  /** `on_error` override, if any, else the session's `failOnError`. */
-  def decisionFailOnError(conf: SQLConf, onError: Option[Boolean]): Boolean =
-    onError.getOrElse(get(conf, FailOnError).forall(_.toBoolean))
+  /** The call's own setting (`on_error`, or `fail_on_error` in params) if any, else the session's. */
+  def failOnError(conf: SQLConf, onError: Option[Boolean]): Boolean =
+    onError.getOrElse(get(conf, FailOnError).forall(bool(FailOnError)))
 
-  def concurrency(conf: SQLConf): Int = get(conf, Concurrency).map(_.toInt).getOrElse(16).max(1)
+  def concurrency(conf: SQLConf): Int = get(conf, Concurrency).map(int(Concurrency)).getOrElse(16).max(1)
 
   def failOnError(conf: SQLConf, params: Map[String, String]): Boolean =
-    params.get("fail_on_error").orElse(get(conf, FailOnError)).forall(_.toBoolean)
+    failOnError(conf, params.get("fail_on_error").map(bool("ai_query param fail_on_error")))
 
   def distribution(conf: SQLConf): Option[AiDistribution] = get(conf, Partitions).map { p =>
-    val partitions = p.toInt
+    val partitions = int(Partitions)(p)
     require(partitions >= 1, s"$Partitions must be at least 1, got $partitions")
     val coalesce = get(conf, PartitionMode).getOrElse("shuffle").toLowerCase match {
       case "shuffle" => false

@@ -62,14 +62,19 @@ class AsyncEvaluator(
         val request = requests(i)
         numRequests += 1
         requestTime += r.nanos / 1000000
-        if (r.error == null) {
-          request.complete(r.value, results)
-        } else {
+        // A response can still fail here, e.g. a refused question under on_error => 'fail'.
+        val error = if (r.error != null) r.error else {
+          try { request.complete(r.value, results); null }
+          catch { case e: Exception => e }
+        }
+        if (error != null) {
           failures += 1
           if (request.failOnError) {
-            throw new RuntimeException(s"${request.describe} failed", r.error)
+            cancel(futures, i + 1)
+            throw new RuntimeException(s"${request.describe} failed", error)
           }
-          logWarning(s"${request.describe} failed, returning null", r.error)
+          logWarning(s"${request.describe} failed, returning null", error)
+          request.columns.foreach(c => results.setNullAt(c))
         }
       }
       i += 1
@@ -79,9 +84,10 @@ class AsyncEvaluator(
     output(joined(row, results))
   }
 
+  private def cancel(futures: Array[Future[AiResponse]], from: Int): Unit =
+    futures.iterator.drop(from).foreach(f => if (f != null) f.cancel(true))
+
   private def cancelAll(): Unit = {
-    while (!pending.isEmpty) {
-      pending.poll()._2.foreach(f => if (f != null) f.cancel(true))
-    }
+    while (!pending.isEmpty) cancel(pending.poll()._2, 0)
   }
 }
